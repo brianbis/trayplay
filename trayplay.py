@@ -229,6 +229,7 @@ class ConfigStore:
                 "autostart_with_windows": cfg.autostart_with_windows,
                 "auto_capture_preferred_app": cfg.auto_capture_preferred_app,
                 "preferred_app_names": cfg.preferred_app_names,
+                "hotkey_toggle": cfg.hotkey_toggle,
             }
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
