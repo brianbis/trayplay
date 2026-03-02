@@ -2189,10 +2189,14 @@ class AirPlayTray:
                     pass
 
             win.bind("<Escape>", _dismiss)
-            # Close when clicking outside
-            win.after(100, lambda: win.grab_set())
-            win.bind("<FocusOut>", lambda e: win.after(50, lambda: _dismiss() if win.focus_get() is None else None))
-            slider.focus_set()
+            win.bind("<Return>", _dismiss)
+            win.protocol("WM_DELETE_WINDOW", _dismiss)
+
+            def _after_grab():
+                win.grab_set()
+                slider.focus_set()
+
+            win.after(100, _after_grab)
 
         self._run_on_ui(_show)
 
