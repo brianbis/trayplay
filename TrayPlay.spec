@@ -10,7 +10,7 @@ hiddenimports += collect_submodules("pyatv")
 
 
 a = Analysis(
-    ["airplay_tray2.py"],
+    ["trayplay.py"],
     pathex=[],
     binaries=[],
     datas=[],

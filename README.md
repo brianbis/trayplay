@@ -2,6 +2,8 @@
 
 TrayPlay is a Windows system tray app that streams Windows audio to AirPlay/RAOP receivers.
 
+Current version: `0.1.0`
+
 It can stream:
 
 - All system audio using WASAPI loopback
@@ -48,19 +50,19 @@ pip install pyatv pyaudiowpatch pycaw pystray Pillow comtypes
 From the repository folder:
 
 ```powershell
-python .\airplay_tray2.py
+python .\trayplay.py
 ```
 
 For app-level debug logging:
 
 ```powershell
-python .\airplay_tray2.py --debug
+python .\trayplay.py --debug
 ```
 
 To also enable verbose `pyatv` logging:
 
 ```powershell
-python .\airplay_tray2.py --debug-pyatv
+python .\trayplay.py --debug-pyatv
 ```
 
 ## Building a Windows Executable
@@ -113,7 +115,7 @@ If your receiver does not appear automatically:
 
 ## Repository Layout
 
-- `airplay_tray2.py` - main application script
+- `trayplay.py` - main application script
 
 ## License
 

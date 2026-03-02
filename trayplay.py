@@ -49,6 +49,7 @@ import winsound
 # ──────────────────────────────────────────────────────────────────────────────
 
 APP_NAME = "TrayPlay"
+APP_VERSION = "0.1.0"
 CONFIG_VERSION = 2
 
 TARGET_SR = 44100
@@ -2264,7 +2265,7 @@ class AirPlayTray:
 
     def _about(self, icon=None, item=None):
         msg = (
-            f"{APP_NAME}\n\n"
+            f"{APP_NAME} v{APP_VERSION}\n\n"
             "Mirrors Windows audio to an AirPlay receiver via RAOP.\n\n"
             f"Config: {CONFIG_PATH}\n"
             f"Logs: {LOG_PATH}"
