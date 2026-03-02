@@ -2584,19 +2584,8 @@ class AirPlayTray:
             source_items.append(pystray.MenuItem("(no active sessions)", None, enabled=False))
         source_submenu = pystray.Menu(*source_items)
 
-        gain_items = [
-            pystray.MenuItem(
-                f"{db:+} dB",
-                self._set_gain(db),
-                checked=lambda item, db=db: self._gain_db == db,
-                radio=True,
-            )
-            for db in GAIN_PRESETS
-        ]
         gain_submenu = pystray.Menu(
-            *gain_items,
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Adjust...", self._open_gain_slider),
+            pystray.MenuItem("Adjust...", self._open_gain_popup),
             pystray.MenuItem(
                 "Limiter (prevent clipping)",
                 self._toggle_limiter,
