@@ -2124,6 +2124,7 @@ class AirPlayTray:
             current = float(self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0)
 
             win = tk.Toplevel(self._ui_root)
+            win.title("Receiver Volume")
             win.overrideredirect(True)
             win.attributes("-topmost", True)
 
