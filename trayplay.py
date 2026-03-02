@@ -204,6 +204,10 @@ class ConfigStore:
             if isinstance(pan, list) and all(isinstance(x, str) for x in pan):
                 cfg.preferred_app_names = [x.strip() for x in pan if x.strip()] or cfg.preferred_app_names
 
+            ht = raw.get("hotkey_toggle")
+            if isinstance(ht, str):
+                cfg.hotkey_toggle = ht.strip()
+
         return cfg
 
     def save(self, cfg: AppConfig) -> None:
