@@ -2131,7 +2131,7 @@ class AirPlayTray:
 
             # Slider dimensions
             slider_len = 200
-            win_w, win_h = 52, slider_len + 50
+            win_w, win_h = 80, slider_len + 60
 
             # Position above the mouse pointer (near tray icon)
             mx, my = win.winfo_pointerxy()
