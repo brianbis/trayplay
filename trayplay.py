@@ -2507,6 +2507,8 @@ class AirPlayTray:
             pystray.MenuItem("Edit preferred apps...", self._edit_preferred_apps_dialog),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Network binding", bind_submenu),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(f"Toggle Hotkey: {self._cfg.hotkey_toggle or '(disabled)'}", self._change_hotkey_dialog),
         )
 
         toggle_label = "Stop Streaming" if self._streaming else "Start Streaming"
