@@ -1917,7 +1917,16 @@ class AirPlayTray:
                     self._streaming = True
                 self._update_menu()
 
-                # Apply configured receiver volume (best-effort)
+                # Sync receiver volume: read actual, then apply configured
+                try:
+                    actual_vol = await atv.audio.volume
+                    log.info(f"Receiver actual volume: {actual_vol:.1f}%")
+                    if self._cfg.receiver_volume is None:
+                        self._cfg.receiver_volume = float(actual_vol)
+                        self._config_store.save(self._cfg)
+                        self._update_menu()
+                except Exception:
+                    log.debug("Could not read receiver volume", exc_info=True)
                 if self._cfg.receiver_volume is not None:
                     try:
                         await atv.audio.set_volume(float(self._cfg.receiver_volume))
