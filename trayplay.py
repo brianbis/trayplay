@@ -2280,6 +2280,12 @@ class AirPlayTray:
 
     # ───────────────────────── Tray callbacks ──────────────────────────────
 
+    def _toggle_streaming(self, icon=None, item=None):
+        if self._streaming:
+            self._stop_streaming()
+        else:
+            self._start_streaming()
+
     def _start_streaming(self, icon=None, item=None):
         if self._streaming:
             return
