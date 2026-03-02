@@ -2506,15 +2506,6 @@ class AirPlayTray:
         )
 
         rv = self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0
-        receiver_vol_submenu = pystray.Menu(
-            pystray.MenuItem("0% (mute)", self._set_receiver_volume(0.0), checked=lambda item: rv == 0.0, radio=True),
-            pystray.MenuItem("25%", self._set_receiver_volume(25.0), checked=lambda item: rv == 25.0, radio=True),
-            pystray.MenuItem("50%", self._set_receiver_volume(50.0), checked=lambda item: rv == 50.0, radio=True),
-            pystray.MenuItem("75%", self._set_receiver_volume(75.0), checked=lambda item: rv == 75.0, radio=True),
-            pystray.MenuItem("100%", self._set_receiver_volume(100.0), checked=lambda item: rv == 100.0, radio=True),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Adjust...", self._open_receiver_volume_slider),
-        )
 
         bind_submenu = pystray.Menu(
             pystray.MenuItem("Auto (recommended)", self._set_bind_mode("auto"), checked=lambda item: self._cfg.bind_mode == "auto", radio=True),
