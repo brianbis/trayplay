@@ -2119,15 +2119,6 @@ class AirPlayTray:
 
     # ───────────────────────── Gain & receiver volume ──────────────────────
 
-    def _set_gain(self, db: int):
-        def handler(icon=None, item=None):
-            self._gain_db = int(db)
-            self._cfg.gain_db = self._gain_db
-            self._cfg_store.save(self._cfg)
-            log.info(f"Gain set to {db:+} dB")
-            self._update_menu()
-        return handler
-
     def _toggle_limiter(self, icon=None, item=None):
         self._enable_limiter = not self._enable_limiter
         self._cfg.enable_limiter = self._enable_limiter
