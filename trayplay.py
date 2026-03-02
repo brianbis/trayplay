@@ -1244,6 +1244,51 @@ class AirPlayTray:
         except Exception:
             pass
 
+    @staticmethod
+    def _theme_colors():
+        dark = _is_dark_theme()
+        if dark:
+            return {
+                "bg": "#2b2b2b", "fg": "#ffffff",
+                "entry_bg": "#3c3c3c", "entry_fg": "#ffffff",
+                "button_bg": "#444444", "button_fg": "#ffffff",
+                "listbox_bg": "#333333", "listbox_fg": "#ffffff", "listbox_select": "#005a9e",
+                "trough": "#333", "thumb": "#ccc", "focus": "#6688cc",
+            }
+        return {
+            "bg": "#f0f0f0", "fg": "#111111",
+            "entry_bg": "#ffffff", "entry_fg": "#111111",
+            "button_bg": "#e0e0e0", "button_fg": "#111111",
+            "listbox_bg": "#ffffff", "listbox_fg": "#111111", "listbox_select": "#0078d4",
+            "trough": "#ccc", "thumb": "#555", "focus": "#3366aa",
+        }
+
+    def _apply_theme(self, widget, colors):
+        """Recursively apply theme colors to a widget tree."""
+        try:
+            wtype = widget.winfo_class()
+            if wtype in ("Toplevel", "Frame", "Labelframe"):
+                widget.configure(bg=colors["bg"])
+            elif wtype == "Label":
+                widget.configure(bg=colors["bg"], fg=colors["fg"])
+            elif wtype == "Button":
+                widget.configure(bg=colors["button_bg"], fg=colors["button_fg"],
+                                 activebackground=colors["button_bg"], activeforeground=colors["button_fg"])
+            elif wtype == "Entry":
+                widget.configure(bg=colors["entry_bg"], fg=colors["entry_fg"],
+                                 insertbackground=colors["fg"])
+            elif wtype == "Listbox":
+                widget.configure(bg=colors["listbox_bg"], fg=colors["listbox_fg"],
+                                 selectbackground=colors["listbox_select"], selectforeground="#ffffff")
+            elif wtype == "Scale":
+                widget.configure(bg=colors["bg"], fg=colors["fg"],
+                                 troughcolor=colors["trough"], activebackground=colors["thumb"],
+                                 highlightcolor=colors["focus"])
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            self._apply_theme(child, colors)
+
     def _create_dialog(self, title: str, geometry: str, focus_widget=None):
         if self._ui_root is None:
             raise RuntimeError("UI root not ready")
@@ -1251,6 +1296,9 @@ class AirPlayTray:
         win.title(title)
         win.resizable(False, False)
         win.attributes("-topmost", True)
+        colors = self._theme_colors()
+        win.configure(bg=colors["bg"])
+        win._theme = colors
         # Position near mouse cursor
         try:
             mx, my = win.winfo_pointerxy()
@@ -1270,6 +1318,7 @@ class AirPlayTray:
                 win.deiconify()
                 win.lift()
                 win.focus_force()
+                self._apply_theme(win, colors)
                 target = win._focus_target
                 if target:
                     target.focus_set()
