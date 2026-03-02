@@ -2367,6 +2367,7 @@ class AirPlayTray:
 
     def _quit(self, icon=None, item=None):
         self._shutdown.set()
+        self._unregister_hotkey()
         self._stop_streaming()
 
         if self._enumerator and self._device_client:
