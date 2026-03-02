@@ -48,7 +48,7 @@ import winsound
 # Configuration + logging
 # ──────────────────────────────────────────────────────────────────────────────
 
-APP_NAME = "AirPlayTrayStreamer"
+APP_NAME = "TrayPlay"
 CONFIG_VERSION = 2
 
 TARGET_SR = 44100
@@ -68,7 +68,7 @@ PROCESS_LIVENESS_CHECK_SEC = 0.5
 RAOP_EXTRA_LATENCY_FRAMES = 11025
 PROCESS_EVENT_WAIT_MS = 50
 
-log = logging.getLogger("airplay_tray")
+log = logging.getLogger("trayplay")
 log.setLevel(logging.INFO)
 
 try:
@@ -86,7 +86,7 @@ def _appdata_dir() -> Path:
 APP_DIR = _appdata_dir()
 APP_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = APP_DIR / "config.json"
-LOG_PATH = APP_DIR / "airplay_tray.log"
+LOG_PATH = APP_DIR / "trayplay.log"
 
 try:
     from logging.handlers import RotatingFileHandler
@@ -2503,7 +2503,7 @@ class AirPlayTray:
         self._scan_devices()
 
         self._icon = pystray.Icon(
-            "airplay_tray",
+            "trayplay",
             icon=ICON_IDLE,
             title="AirPlay: Idle",
             menu=self._build_menu(),

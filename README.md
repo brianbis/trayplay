@@ -63,6 +63,33 @@ To also enable verbose `pyatv` logging:
 python .\airplay_tray2.py --debug-pyatv
 ```
 
+## Building a Windows Executable
+
+TrayPlay includes a PyInstaller spec file for Windows builds.
+
+Install build tools:
+
+```powershell
+pip install pyinstaller pyatv pyaudiowpatch pycaw pystray Pillow comtypes
+```
+
+Build:
+
+```powershell
+pyinstaller .\TrayPlay.spec
+```
+
+The packaged app will be created in `dist\TrayPlay\`.
+
+## GitHub Actions
+
+This repository includes a Windows GitHub Actions workflow that:
+
+- builds TrayPlay on Windows
+- packages the `dist\TrayPlay` folder as a zip
+- uploads the zip as a workflow artifact
+- attaches the zip to a GitHub Release when you push a version tag such as `v0.1.0`
+
 ## Usage
 
 1. Launch the script.
