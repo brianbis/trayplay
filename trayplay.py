@@ -2150,8 +2150,9 @@ class AirPlayTray:
                 win, from_=100, to=0, orient=tk.VERTICAL,
                 length=slider_len, width=14, sliderlength=18,
                 resolution=1, showvalue=False,
+                label="Vol",
                 bg="#2b2b2b", fg="white", troughcolor="#555",
-                highlightthickness=0, bd=0,
+                highlightthickness=2, highlightcolor="#6688cc", bd=0,
                 activebackground="#999",
             )
             slider.set(int(current))
