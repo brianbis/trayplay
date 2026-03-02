@@ -2119,63 +2119,77 @@ class AirPlayTray:
 
         self._run_on_ui(_show)
 
-    def _set_receiver_volume(self, level: float):
-        def handler(icon=None, item=None):
-            level_f = float(level)
-            self._cfg.receiver_volume = level_f
-            self._cfg_store.save(self._cfg)
-            log.info(f"Receiver volume target: {level_f:.0f}%")
-            if self._atv:
-                try:
-                    self._schedule(self._atv.audio.set_volume(level_f))
-                except Exception as e:
-                    log.warning(f"Failed to set receiver volume: {e}")
-            self._update_menu()
-        return handler
-
-    def _open_receiver_volume_slider(self, icon=None, item=None):
+    def _open_receiver_volume_popup(self, icon=None, item=None):
         def _show():
-            win = self._create_dialog("Receiver Volume", "400x250")
-
             current = float(self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0)
-            lf = tk.LabelFrame(win, text="Receiver volume (0-100)")
-            lf.pack(padx=12, pady=(10, 0), fill=tk.X)
-            slider = tk.Scale(
-                lf,
-                from_=0,
-                to=100,
-                orient=tk.HORIZONTAL,
-                showvalue=True,
-                length=300,
-                resolution=1,
-                label="Use Left and Right arrow keys to adjust",
-            )
-            slider.set(current)
-            slider.pack(padx=4, pady=4)
-            win._focus_target = slider
 
-            def on_apply_and_close():
-                v = float(slider.get())
-                self._cfg.receiver_volume = v
+            win = tk.Toplevel(self._ui_root)
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+
+            # Slider dimensions
+            slider_len = 200
+            win_w, win_h = 52, slider_len + 50
+
+            # Position above the mouse pointer (near tray icon)
+            mx, my = win.winfo_pointerxy()
+            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+            x = max(0, min(mx - win_w // 2, sw - win_w))
+            y = max(0, min(my - win_h - 8, sh - win_h))
+            win.geometry(f"{win_w}x{win_h}+{x}+{y}")
+
+            win.configure(bg="#2b2b2b")
+
+            pct_var = tk.StringVar(value=f"{int(current)}%")
+            label = tk.Label(win, textvariable=pct_var, fg="white", bg="#2b2b2b",
+                             font=("Segoe UI", 9))
+            label.pack(pady=(6, 0))
+
+            slider = tk.Scale(
+                win, from_=100, to=0, orient=tk.VERTICAL,
+                length=slider_len, width=14, sliderlength=18,
+                resolution=1, showvalue=False,
+                bg="#2b2b2b", fg="white", troughcolor="#555",
+                highlightthickness=0, bd=0,
+                activebackground="#999",
+            )
+            slider.set(int(current))
+            slider.pack(padx=4)
+
+            _debounce_id = [None]
+
+            def _on_change(val):
+                v = int(float(val))
+                pct_var.set(f"{v}%")
+                # Debounce: apply after 150ms of no change
+                if _debounce_id[0]:
+                    win.after_cancel(_debounce_id[0])
+                _debounce_id[0] = win.after(150, lambda: _apply(v))
+
+            def _apply(v):
+                self._cfg.receiver_volume = float(v)
                 self._cfg_store.save(self._cfg)
                 if self._atv:
                     try:
-                        self._schedule(self._atv.audio.set_volume(v))
+                        self._schedule(self._atv.audio.set_volume(float(v)))
                     except Exception:
                         pass
                 self._update_menu()
-                self._close_dialog(win)
 
-            slider.bind("<Return>", lambda e: on_apply_and_close())
-            btn_frame = tk.Frame(win, takefocus=0)
-            btn_frame.pack(pady=(8, 0))
-            tk.Button(btn_frame, text="Apply", command=on_apply_and_close, width=16).pack(side=tk.LEFT, padx=4)
-            tk.Button(
-                btn_frame,
-                text="Cancel",
-                command=lambda: self._close_dialog(win),
-                width=16,
-            ).pack(side=tk.LEFT, padx=4)
+            slider.configure(command=_on_change)
+
+            def _dismiss(event=None):
+                try:
+                    win.grab_release()
+                    win.destroy()
+                except Exception:
+                    pass
+
+            win.bind("<Escape>", _dismiss)
+            # Close when clicking outside
+            win.after(100, lambda: win.grab_set())
+            win.bind("<FocusOut>", lambda e: win.after(50, lambda: _dismiss() if win.focus_get() is None else None))
+            slider.focus_set()
 
         self._run_on_ui(_show)
 
