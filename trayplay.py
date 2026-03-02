@@ -2537,7 +2537,7 @@ class AirPlayTray:
             pystray.MenuItem(toggle_label, toggle_action),
             pystray.MenuItem(f"Target Device: {target_name}", device_submenu),
             pystray.MenuItem(f"Audio Source: {source_label}", source_submenu),
-            pystray.MenuItem(f"Receiver Volume: {rv:.0f}%", receiver_vol_submenu),
+            pystray.MenuItem(f"Receiver Volume: {rv:.0f}%", self._open_receiver_volume_popup),
             pystray.MenuItem(f"Local Gain: {self._gain_db:+} dB", gain_submenu),
             pystray.MenuItem("Settings", settings_submenu),
             pystray.Menu.SEPARATOR,
