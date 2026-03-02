@@ -2185,12 +2185,7 @@ class AirPlayTray:
     def _open_receiver_volume_popup(self, icon=None, item=None):
         def _show():
             current = float(self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0)
-            dark = _is_dark_theme()
-
-            if dark:
-                bg, fg, trough, thumb, focus_clr = "#2b2b2b", "#ffffff", "#333", "#ccc", "#6688cc"
-            else:
-                bg, fg, trough, thumb, focus_clr = "#f0f0f0", "#111111", "#ccc", "#555", "#3366aa"
+            c = self._theme_colors()
 
             win = tk.Toplevel(self._ui_root)
             win.title("Receiver Volume")
@@ -2209,10 +2204,10 @@ class AirPlayTray:
             y = max(0, min(my - win_h - 8, sh - win_h))
             win.geometry(f"{win_w}x{win_h}+{x}+{y}")
 
-            win.configure(bg=bg)
+            win.configure(bg=c["bg"])
 
             pct_var = tk.StringVar(value=f"{int(current)}%")
-            label = tk.Label(win, textvariable=pct_var, fg=fg, bg=bg,
+            label = tk.Label(win, textvariable=pct_var, fg=c["fg"], bg=c["bg"],
                              font=("Segoe UI", 9))
             label.pack(pady=(6, 0))
 
@@ -2221,9 +2216,9 @@ class AirPlayTray:
                 length=slider_len, width=14, sliderlength=18,
                 resolution=1, showvalue=False,
                 label="Receiver Volume",
-                bg=bg, fg=fg, troughcolor=trough,
-                highlightthickness=2, highlightcolor=focus_clr, bd=0,
-                activebackground=thumb,
+                bg=c["bg"], fg=c["fg"], troughcolor=c["trough"],
+                highlightthickness=2, highlightcolor=c["focus"], bd=0,
+                activebackground=c["thumb"],
             )
             slider.set(int(current))
             slider.pack(padx=4)
