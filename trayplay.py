@@ -30,10 +30,8 @@ import ipaddress
 import json
 import logging
 import os
-import re
 import socket
 import struct
-import subprocess
 import threading
 import time
 from collections import deque
@@ -67,6 +65,15 @@ PROCESS_IDLE_POLL_SEC = 0.002
 PROCESS_LIVENESS_CHECK_SEC = 0.5
 RAOP_EXTRA_LATENCY_FRAMES = 11025
 PROCESS_EVENT_WAIT_MS = 50
+AUDIO_SESSION_CACHE_TTL_SEC = 2.5
+DEVICE_STALE_SEC = 300
+VT_BLOB = 0x41
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+BIND_MODE_AUTO = "auto"
+BIND_MODE_MANUAL = "manual"
+BIND_MODE_NONE = "none"
+BIND_MODES = (BIND_MODE_AUTO, BIND_MODE_MANUAL, BIND_MODE_NONE)
 
 log = logging.getLogger("trayplay")
 log.setLevel(logging.INFO)
@@ -118,9 +125,10 @@ class AppConfig:
     selected_device_name: Optional[str] = None
     selected_device_address: Optional[str] = None  # for unicast scan fallback
     device_usage: Dict[str, int] = field(default_factory=dict)  # identifier -> count
+    device_nicknames: Dict[str, str] = field(default_factory=dict)  # identifier -> nickname
 
     # Network binding (work-around for route precedence issues)
-    bind_mode: str = "auto"  # "auto" | "manual" | "none"
+    bind_mode: str = BIND_MODE_AUTO
     manual_local_ip: Optional[str] = None
 
     # Streaming + reconnection
@@ -149,10 +157,10 @@ class ConfigStore:
 
     def load(self) -> AppConfig:
         with self._lock:
-            if not self.path.exists():
-                return AppConfig()
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return AppConfig()
             except Exception:
                 log.exception("Failed to read config.json, starting with defaults")
                 return AppConfig()
@@ -169,9 +177,17 @@ class ConfigStore:
             if isinstance(du, dict):
                 cfg.device_usage = {str(k): int(v) for k, v in du.items() if str(k)}
 
+            dn = raw.get("device_nicknames")
+            if isinstance(dn, dict):
+                cfg.device_nicknames = {
+                    str(k): str(v).strip()
+                    for k, v in dn.items()
+                    if str(k) and str(v).strip()
+                }
+
             cfg.bind_mode = str(raw.get("bind_mode", cfg.bind_mode) or cfg.bind_mode)
-            if cfg.bind_mode not in ("auto", "manual", "none"):
-                cfg.bind_mode = "auto"
+            if cfg.bind_mode not in BIND_MODES:
+                cfg.bind_mode = BIND_MODE_AUTO
             cfg.manual_local_ip = raw.get("manual_local_ip") or None
 
             cfg.reconnect_delay_sec = int(
@@ -217,6 +233,7 @@ class ConfigStore:
                 "selected_device_name": cfg.selected_device_name,
                 "selected_device_address": cfg.selected_device_address,
                 "device_usage": cfg.device_usage,
+                "device_nicknames": cfg.device_nicknames,
                 "bind_mode": cfg.bind_mode,
                 "manual_local_ip": cfg.manual_local_ip,
                 "reconnect_delay_sec": cfg.reconnect_delay_sec,
@@ -266,6 +283,9 @@ def set_autostart_enabled(enable: bool) -> None:
 
 def _is_dark_theme() -> bool:
     """Return True if Windows app theme is dark."""
+    cached = getattr(_is_dark_theme, "_cached", None)
+    if cached is not None:
+        return bool(cached)
     try:
         import winreg
         with winreg.OpenKey(
@@ -273,9 +293,11 @@ def _is_dark_theme() -> bool:
             r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
         ) as key:
             val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-            return val == 0
+            result = val == 0
     except Exception:
-        return True  # default to dark
+        result = True  # default to dark
+    _is_dark_theme._cached = result
+    return result
 
 
 def is_autostart_enabled() -> bool:
@@ -496,7 +518,7 @@ def open_process_loopback(
     )
 
     propvar = PROPVARIANT_BLOB()
-    propvar.vt = 0x41
+    propvar.vt = VT_BLOB
     propvar.cbSize = ctypes.sizeof(act_params)
     propvar.pBlobData = ctypes.cast(ctypes.pointer(act_params), ctypes.c_void_p)
 
@@ -589,18 +611,6 @@ def open_process_loopback(
 def list_local_ipv4_addresses() -> List[str]:
     ips: List[str] = []
     try:
-        out = subprocess.check_output(["ipconfig"], text=True, errors="ignore")
-        for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", out):
-            if ip.startswith(("127.", "169.254.")):
-                continue
-            parts = ip.split(".")
-            if any(not (0 <= int(p) <= 255) for p in parts):
-                continue
-            ips.append(ip)
-    except Exception:
-        pass
-
-    try:
         hostname = socket.gethostname()
         for family, _, _, _, sockaddr in socket.getaddrinfo(hostname, None, family=socket.AF_INET):
             if family == socket.AF_INET:
@@ -610,18 +620,11 @@ def list_local_ipv4_addresses() -> List[str]:
                 ips.append(ip)
     except Exception:
         pass
-
-    seen = set()
-    uniq: List[str] = []
-    for ip in ips:
-        if ip not in seen:
-            seen.add(ip)
-            uniq.append(ip)
-    return uniq
+    return list(dict.fromkeys(ips))
 
 
 class NetworkBinder:
-    def __init__(self, mode: str = "auto", manual_ip: Optional[str] = None):
+    def __init__(self, mode: str = BIND_MODE_AUTO, manual_ip: Optional[str] = None):
         self._lock = threading.Lock()
         self.mode = mode
         self.manual_ip = manual_ip
@@ -635,10 +638,10 @@ class NetworkBinder:
 
     def update_for_target(self, target_ip: str) -> Optional[str]:
         with self._lock:
-            if self.mode == "none":
+            if self.mode == BIND_MODE_NONE:
                 self.local_ip = None
                 return None
-            if self.mode == "manual":
+            if self.mode == BIND_MODE_MANUAL:
                 self.local_ip = self.manual_ip
                 return self.local_ip
             self.local_ip = self._auto_pick_local_ip(target_ip)
@@ -1093,8 +1096,46 @@ def _make_icon(color: str, letter: str = ""):
     return img
 
 
+def _make_volume_icon(percent: float):
+    pct = max(0.0, min(100.0, float(percent)))
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    outer = [8, 8, 56, 56]
+    inner = [11, 11, 53, 53]
+    draw.ellipse(outer, fill="#1E1E1E", outline="#0E0E0E", width=2)
+    draw.ellipse(inner, fill="#303030")
+
+    fill_top = int(inner[3] - ((inner[3] - inner[1]) * (pct / 100.0)))
+    fill_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    fill_draw = ImageDraw.Draw(fill_layer)
+    fill_draw.rectangle([inner[0], fill_top, inner[2], inner[3]], fill="#00CC00")
+
+    mask = Image.new("L", img.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.ellipse(inner, fill=255)
+    img = Image.composite(fill_layer, img, mask)
+
+    draw = ImageDraw.Draw(img)
+    draw.ellipse(outer, outline="#0E0E0E", width=2)
+    draw.polygon([(26, 22), (26, 42), (42, 32)], fill="white")
+    return img
+
+
+_VOLUME_ICON_CACHE: Dict[int, Image.Image] = {}
+
+
+def _volume_icon(percent: float):
+    pct = int(round(max(0.0, min(100.0, float(percent)))))
+    cached = _VOLUME_ICON_CACHE.get(pct)
+    if cached is None:
+        cached = _make_volume_icon(pct)
+        _VOLUME_ICON_CACHE[pct] = cached
+    return cached
+
+
 ICON_IDLE = _make_icon("#808080", "-")
-ICON_STREAMING = _make_icon("#00CC00", ">")
+ICON_STREAMING = _volume_icon(100)
 ICON_ERROR = _make_icon("#CC0000", "!")
 
 
@@ -1157,8 +1198,6 @@ class AirPlayTray:
         # State
         self._streaming = False
         self._status = "Idle"
-        self._gain_db = int(self._cfg.gain_db)
-        self._enable_limiter = bool(self._cfg.enable_limiter)
 
         self._async_loop: Optional[asyncio.AbstractEventLoop] = None
         self._async_thread: Optional[threading.Thread] = None
@@ -1188,6 +1227,9 @@ class AirPlayTray:
         self._ui_thread: Optional[threading.Thread] = None
         self._ui_ready = threading.Event()
         self._last_error: Optional[str] = None
+        self._audio_sessions_cache: List[Tuple[int, str]] = []
+        self._audio_sessions_cache_at = 0.0
+        self._status_icon = ICON_IDLE
 
     # ───────────────────────── Async loop helpers ─────────────────────────
 
@@ -1233,6 +1275,14 @@ class AirPlayTray:
         except Exception as e:
             log.warning(f"Failed to schedule UI work: {e}")
 
+    def _show_message_dialog(self, show_fn: Callable[..., None], title: str, message: str) -> None:
+        def _show():
+            if self._ui_root is None:
+                return
+            show_fn(title, message, parent=self._ui_root)
+
+        self._run_on_ui(_show)
+
     def _close_dialog(self, win) -> None:
         try:
             win.grab_release()
@@ -1242,6 +1292,19 @@ class AirPlayTray:
             win.destroy()
         except Exception:
             pass
+
+    def _create_dialog_buttons(
+        self,
+        win,
+        buttons: List[Tuple[str, Callable[[], None]]],
+        pady: Tuple[int, int] = (8, 0),
+        width: int = 16,
+    ):
+        frame = tk.Frame(win, takefocus=0)
+        frame.pack(pady=pady)
+        for text, command in buttons:
+            tk.Button(frame, text=text, command=command, width=width).pack(side=tk.LEFT, padx=4)
+        return frame
 
     @staticmethod
     def _theme_colors():
@@ -1329,20 +1392,10 @@ class AirPlayTray:
         return win
 
     def _show_error_dialog(self, title: str, message: str) -> None:
-        def _show():
-            if self._ui_root is None:
-                return
-            messagebox.showerror(title, message, parent=self._ui_root)
-
-        self._run_on_ui(_show)
+        self._show_message_dialog(messagebox.showerror, title, message)
 
     def _show_info_dialog(self, title: str, message: str) -> None:
-        def _show():
-            if self._ui_root is None:
-                return
-            messagebox.showinfo(title, message, parent=self._ui_root)
-
-        self._run_on_ui(_show)
+        self._show_message_dialog(messagebox.showinfo, title, message)
 
     # ───────────────────────── Discovery / selection ──────────────────────
 
@@ -1381,6 +1434,10 @@ class AirPlayTray:
         now = time.time()
         count = 0
         with self._devices_lock:
+            cutoff = now - DEVICE_STALE_SEC
+            stale_ids = [identifier for identifier, dev in self._devices.items() if dev.last_seen < cutoff]
+            for identifier in stale_ids:
+                self._devices.pop(identifier, None)
             for conf in configs:
                 try:
                     if not conf.get_service(Protocol.RAOP):
@@ -1396,6 +1453,10 @@ class AirPlayTray:
 
     def _get_devices_sorted(self) -> List[DiscoveredDevice]:
         with self._devices_lock:
+            cutoff = time.time() - DEVICE_STALE_SEC
+            stale_ids = [identifier for identifier, dev in self._devices.items() if dev.last_seen < cutoff]
+            for identifier in stale_ids:
+                self._devices.pop(identifier, None)
             devices = list(self._devices.values())
         usage = self._cfg.device_usage
 
@@ -1404,6 +1465,73 @@ class AirPlayTray:
 
         devices.sort(key=key, reverse=True)
         return devices
+
+    def _record_device_selection(self, dev: DiscoveredDevice) -> None:
+        display_name = self._display_device_name(dev.identifier, dev.name)
+        self._cfg.selected_device_id = dev.identifier
+        self._cfg.selected_device_name = display_name
+        self._cfg.selected_device_address = dev.address
+        self._cfg.device_usage[dev.identifier] = int(self._cfg.device_usage.get(dev.identifier, 0)) + 1
+        self._cfg_store.save(self._cfg)
+
+    def _display_device_name(self, identifier: str, name: str) -> str:
+        nickname = self._cfg.device_nicknames.get(identifier)
+        return nickname or name
+
+    def _receiver_volume_text(self) -> str:
+        rv = self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0
+        return f"{rv:.0f}%"
+
+    def _label_with_receiver_volume(self, label: str) -> str:
+        return f"{label} {self._receiver_volume_text()}"
+
+    def _selected_receiver_label(self) -> Optional[str]:
+        resolved_name = self._selected_receiver_name()
+        if not resolved_name:
+            return None
+        return self._label_with_receiver_volume(resolved_name)
+
+    def _selected_receiver_name(self) -> Optional[str]:
+        identifier = self._cfg.selected_device_id
+        if not identifier:
+            return None
+        resolved_name = None
+        with self._devices_lock:
+            dev = self._devices.get(identifier)
+        if dev is not None:
+            resolved_name = self._display_device_name(identifier, dev.name)
+        elif self._cfg.selected_device_name:
+            resolved_name = self._cfg.selected_device_name
+        if not resolved_name:
+            return None
+        return resolved_name
+
+    def _status_with_receiver(self, status: str) -> str:
+        receiver_name = self._selected_receiver_name()
+        receiver = self._selected_receiver_label()
+        if not receiver_name or not receiver:
+            return status
+        if receiver in status:
+            return status
+        if receiver_name in status:
+            return status.replace(receiver_name, receiver, 1)
+        return f"{status} | {receiver}"
+
+    def _current_tray_icon(self):
+        if self._status_icon is ICON_STREAMING:
+            return _volume_icon(self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0)
+        return self._status_icon
+
+    def _refresh_tray_visuals(self) -> None:
+        if self._icon:
+            try:
+                self._icon.icon = self._current_tray_icon()
+                self._icon.title = f"AirPlay: {self._status_with_receiver(self._status)}"
+            except Exception:
+                pass
+
+    def _device_menu_label(self, dev: DiscoveredDevice) -> str:
+        return f"{self._display_device_name(dev.identifier, dev.name)} ({dev.address})"
 
     def _select_device(self, identifier: str):
         def handler(icon=None, item=None):
@@ -1414,19 +1542,15 @@ class AirPlayTray:
                 self._update_menu()
                 return
 
-            self._cfg.selected_device_id = dev.identifier
-            self._cfg.selected_device_name = dev.name
-            self._cfg.selected_device_address = dev.address
-            self._cfg.device_usage[dev.identifier] = int(self._cfg.device_usage.get(dev.identifier, 0)) + 1
-            self._cfg_store.save(self._cfg)
-
+            self._record_device_selection(dev)
             self._binder.update_for_target(dev.address)
             log.info(f"Selected device: {dev.name} ({dev.address})")
 
             if self._streaming:
                 self._stop_streaming()
-                time.sleep(0.2)
-                self._start_streaming()
+                restart_timer = threading.Timer(0.2, self._start_streaming)
+                restart_timer.daemon = True
+                restart_timer.start()
 
             self._update_menu()
         return handler
@@ -1443,11 +1567,7 @@ class AirPlayTray:
             return None
 
         dev = devices[0]
-        self._cfg.selected_device_id = dev.identifier
-        self._cfg.selected_device_name = dev.name
-        self._cfg.selected_device_address = dev.address
-        self._cfg.device_usage[dev.identifier] = int(self._cfg.device_usage.get(dev.identifier, 0)) + 1
-        self._cfg_store.save(self._cfg)
+        self._record_device_selection(dev)
         return dev
 
     def _open_selection_dialog(
@@ -1502,21 +1622,119 @@ class AirPlayTray:
 
     def _open_device_picker_dialog(self, icon=None, item=None) -> None:
         devices = self._get_devices_sorted()
-        items = [
-            (f"{dev.name} ({dev.address})", self._select_device(dev.identifier))
-            for dev in devices
-        ]
-        current_index = 0
-        for idx, dev in enumerate(devices):
-            if dev.identifier == self._cfg.selected_device_id:
-                current_index = idx
-                break
-        self._open_selection_dialog(
-            "Choose Target Device",
-            "Select the AirPlay receiver to use.",
-            items,
-            current_index,
-        )
+        if not devices:
+            self._show_info_dialog("Choose Target Device", "No items are currently available.")
+            return
+
+        def _show():
+            win = self._create_dialog("Choose Target Device", "460x360")
+            lf = tk.LabelFrame(win, text="Select the AirPlay receiver to use.")
+            lf.pack(padx=12, pady=(12, 8), fill=tk.BOTH, expand=True)
+            listbox = tk.Listbox(lf, height=12, exportselection=False)
+            for dev in devices:
+                listbox.insert(tk.END, self._device_menu_label(dev))
+            listbox.pack(padx=4, pady=4, fill=tk.BOTH, expand=True)
+
+            current_index = 0
+            for idx, dev in enumerate(devices):
+                if dev.identifier == self._cfg.selected_device_id:
+                    current_index = idx
+                    break
+            listbox.selection_clear(0, tk.END)
+            listbox.selection_set(current_index)
+            listbox.see(current_index)
+            win._focus_target = listbox
+
+            def _selected_device() -> Optional[DiscoveredDevice]:
+                sel = listbox.curselection()
+                if not sel:
+                    messagebox.showerror("No selection", "Please select an item.", parent=win)
+                    return None
+                return devices[int(sel[0])]
+
+            def on_apply():
+                dev = _selected_device()
+                if dev is None:
+                    return
+                self._close_dialog(win)
+                threading.Thread(
+                    target=self._select_device(dev.identifier),
+                    daemon=True,
+                    name="ui-selection-action",
+                ).start()
+
+            def on_rename():
+                dev = _selected_device()
+                if dev is None:
+                    return
+                self._rename_device_dialog(dev.identifier, parent_win=win)
+
+            def on_right_click(event):
+                index = listbox.nearest(event.y)
+                if index < 0:
+                    return
+                listbox.selection_clear(0, tk.END)
+                listbox.selection_set(index)
+                listbox.see(index)
+                on_rename()
+                return "break"
+
+            listbox.bind("<Double-Button-1>", lambda e: on_apply())
+            listbox.bind("<Return>", lambda e: on_apply())
+            listbox.bind("<Button-3>", on_right_click)
+            self._create_dialog_buttons(
+                win,
+                [("Select", on_apply), ("Rename", on_rename), ("Cancel", lambda: self._close_dialog(win))],
+                pady=(0, 12),
+                width=12,
+            )
+
+        self._run_on_ui(_show)
+
+    def _rename_device_dialog(self, identifier: str, parent_win=None) -> None:
+        def _show():
+            with self._devices_lock:
+                dev = self._devices.get(identifier)
+
+            base_name = dev.name if dev else (self._cfg.selected_device_name or "Receiver")
+            current = self._cfg.device_nicknames.get(identifier, "")
+            win = self._create_dialog("Receiver Nickname", "380x150")
+
+            tk.Label(
+                win,
+                text=f"Nickname for {base_name}\nLeave blank to use the device name.",
+                justify="center",
+            ).pack(padx=12, pady=(10, 4))
+            entry = tk.Entry(win, justify="center", font=("Segoe UI", 11))
+            entry.insert(0, current)
+            entry.pack(padx=16, fill="x")
+            win._focus_target = entry
+
+            def on_save():
+                nickname = entry.get().strip()
+                if nickname:
+                    self._cfg.device_nicknames[identifier] = nickname
+                else:
+                    self._cfg.device_nicknames.pop(identifier, None)
+
+                if self._cfg.selected_device_id == identifier:
+                    resolved_name = dev.name if dev else base_name
+                    self._cfg.selected_device_name = self._display_device_name(identifier, resolved_name)
+
+                self._cfg_store.save(self._cfg)
+                self._update_menu()
+                self._close_dialog(win)
+                if parent_win:
+                    self._close_dialog(parent_win)
+
+            entry.bind("<Return>", lambda e: on_save())
+            self._create_dialog_buttons(
+                win,
+                [("Save", on_save), ("Cancel", lambda: self._close_dialog(win))],
+                pady=(10, 0),
+            )
+
+        self._run_on_ui(_show)
 
     def _open_audio_source_picker_dialog(self, icon=None, item=None) -> None:
         sessions = self._get_audio_sessions()
@@ -1561,15 +1779,11 @@ class AirPlayTray:
                 self._close_dialog(win)
 
             entry.bind("<Return>", lambda e: on_add())
-            btn_frame = tk.Frame(win, takefocus=0)
-            btn_frame.pack(pady=(12, 0))
-            tk.Button(btn_frame, text="Scan & Add", command=on_add, width=16).pack(side=tk.LEFT, padx=4)
-            tk.Button(
-                btn_frame,
-                text="Cancel",
-                command=lambda: self._close_dialog(win),
-                width=16,
-            ).pack(side=tk.LEFT, padx=4)
+            self._create_dialog_buttons(
+                win,
+                [("Scan & Add", on_add), ("Cancel", lambda: self._close_dialog(win))],
+                pady=(12, 0),
+            )
 
         self._run_on_ui(_show)
 
@@ -1577,13 +1791,13 @@ class AirPlayTray:
 
     def _set_bind_mode(self, mode: str):
         def handler(icon=None, item=None):
-            if mode not in ("auto", "manual", "none"):
+            if mode not in BIND_MODES:
                 return
-            if mode == "manual":
+            if mode == BIND_MODE_MANUAL:
                 self._manual_bind_ip_dialog()
                 return
             self._cfg.bind_mode = mode
-            if mode == "none":
+            if mode == BIND_MODE_NONE:
                 self._cfg.manual_local_ip = None
             self._binder.configure(self._cfg.bind_mode, self._cfg.manual_local_ip)
             self._cfg_store.save(self._cfg)
@@ -1624,9 +1838,9 @@ class AirPlayTray:
                     listbox.focus_set()
                     return
                 ip = ips[int(sel[0])]
-                self._cfg.bind_mode = "manual"
+                self._cfg.bind_mode = BIND_MODE_MANUAL
                 self._cfg.manual_local_ip = ip
-                self._binder.configure("manual", ip)
+                self._binder.configure(BIND_MODE_MANUAL, ip)
                 self._cfg_store.save(self._cfg)
                 log.info(f"Bind local IP set to: {ip}")
                 self._close_dialog(win)
@@ -1634,15 +1848,11 @@ class AirPlayTray:
 
             listbox.bind("<Double-Button-1>", lambda e: on_apply())
             listbox.bind("<Return>", lambda e: on_apply())
-            btn_frame = tk.Frame(win, takefocus=0)
-            btn_frame.pack(pady=(12, 0))
-            tk.Button(btn_frame, text="Apply", command=on_apply, width=16).pack(side=tk.LEFT, padx=4)
-            tk.Button(
-                btn_frame,
-                text="Cancel",
-                command=lambda: self._close_dialog(win),
-                width=16,
-            ).pack(side=tk.LEFT, padx=4)
+            self._create_dialog_buttons(
+                win,
+                [("Apply", on_apply), ("Cancel", lambda: self._close_dialog(win))],
+                pady=(12, 0),
+            )
 
         self._run_on_ui(_show)
 
@@ -1661,6 +1871,7 @@ class AirPlayTray:
             if self._restart_capture.is_set() and not self._capture_stop.is_set():
                 log.info("Restarting capture...")
                 time.sleep(0.25)
+                self._restart_capture.clear()
 
     def _capture_loop_system(self) -> None:
         pa = None
@@ -1711,8 +1922,8 @@ class AirPlayTray:
                     log.warning("Capture read error, restarting")
                     break
 
-                if self._gain_db != 0:
-                    data = apply_gain_limited(data, self._gain_db, limiter=self._enable_limiter)
+                if self._cfg.gain_db != 0:
+                    data = apply_gain_limited(data, self._cfg.gain_db, limiter=self._cfg.enable_limiter)
                 if needs_downmix:
                     data = downmix_to_stereo(data, ch)
                 if ratio:
@@ -1787,10 +1998,9 @@ class AirPlayTray:
                 if now >= next_process_check:
                     next_process_check = now + PROCESS_LIVENESS_CHECK_SEC
                     try:
-                        import ctypes as _ct
-                        h = _ct.windll.kernel32.OpenProcess(0x1000, False, pid)
+                        h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
                         if h:
-                            _ct.windll.kernel32.CloseHandle(h)
+                            ctypes.windll.kernel32.CloseHandle(h)
                         else:
                             log.warning("Target process exited; switching to All Audio")
                             self._target_pid = None
@@ -1849,7 +2059,7 @@ class AirPlayTray:
                             else:
                                 data = raw
 
-                            data = apply_gain_limited(data, self._gain_db, limiter=self._enable_limiter)
+                            data = apply_gain_limited(data, self._cfg.gain_db, limiter=self._cfg.enable_limiter)
                             if needs_downmix:
                                 data = downmix_to_stereo(data, ch)
                             if ratio:
@@ -1974,7 +2184,8 @@ class AirPlayTray:
                 self._capture_thread.start()
 
                 label = self._target_name or "All Audio"
-                self._set_status(f"Streaming ({label}) -> {conf.name}", ICON_STREAMING)
+                receiver_name = self._display_device_name(conf.identifier, conf.name)
+                self._set_status(f"Streaming ({label}) -> {receiver_name}", ICON_STREAMING)
                 with self._state_lock:
                     self._streaming = True
                 self._update_menu()
@@ -1985,7 +2196,8 @@ class AirPlayTray:
                     log.info(f"Receiver actual volume: {actual_vol:.1f}%")
                     if self._cfg.receiver_volume is None:
                         self._cfg.receiver_volume = float(actual_vol)
-                        self._config_store.save(self._cfg)
+                        self._cfg_store.save(self._cfg)
+                        self._refresh_tray_visuals()
                         self._update_menu()
                 except Exception:
                     log.debug("Could not read receiver volume", exc_info=True)
@@ -2039,6 +2251,10 @@ class AirPlayTray:
     # ───────────────────────── Audio source selection ──────────────────────
 
     def _get_audio_sessions(self) -> List[Tuple[int, str]]:
+        now = time.monotonic()
+        if now - self._audio_sessions_cache_at <= AUDIO_SESSION_CACHE_TTL_SEC:
+            return list(self._audio_sessions_cache)
+
         sessions: List[Tuple[int, str]] = []
         try:
             comtypes.CoInitializeEx(0x0)
@@ -2061,13 +2277,10 @@ class AirPlayTray:
             except Exception:
                 pass
 
-        seen = set()
-        uniq = []
-        for pid, name in sessions:
-            if pid not in seen:
-                seen.add(pid)
-                uniq.append((pid, name))
+        uniq = list(dict.fromkeys(sessions))
         uniq.sort(key=lambda x: (x[1].lower(), x[0]))
+        self._audio_sessions_cache = uniq
+        self._audio_sessions_cache_at = now
         return uniq
 
     def _select_preferred_app_if_available(self) -> None:
@@ -2086,14 +2299,11 @@ class AirPlayTray:
                 return
 
     def _update_source_status(self) -> None:
-        if self._streaming and self._cfg.selected_device_name:
+        receiver_name = self._selected_receiver_name()
+        if self._streaming and receiver_name:
             label = self._target_name or "All Audio"
-            self._status = f"Streaming ({label}) -> {self._cfg.selected_device_name}"
-            if self._icon:
-                try:
-                    self._icon.title = f"AirPlay: {self._status}"
-                except Exception:
-                    pass
+            self._status = f"Streaming ({label}) -> {receiver_name}"
+            self._refresh_tray_visuals()
 
     def _set_audio_source_all(self, icon=None, item=None) -> None:
         if self._target_pid is None:
@@ -2120,167 +2330,109 @@ class AirPlayTray:
     # ───────────────────────── Gain & receiver volume ──────────────────────
 
     def _toggle_limiter(self, icon=None, item=None):
-        self._enable_limiter = not self._enable_limiter
-        self._cfg.enable_limiter = self._enable_limiter
+        self._cfg.enable_limiter = not self._cfg.enable_limiter
         self._cfg_store.save(self._cfg)
-        log.info(f"Limiter {'enabled' if self._enable_limiter else 'disabled'}")
+        log.info(f"Limiter {'enabled' if self._cfg.enable_limiter else 'disabled'}")
         self._update_menu()
 
-    def _open_gain_popup(self, icon=None, item=None):
+    def _open_slider_popup(
+        self,
+        title: str,
+        from_: int,
+        to: int,
+        initial: int,
+        format_fn: Callable[[int], str],
+        apply_fn: Callable[[int], None],
+    ) -> None:
         def _show():
-            c = self._theme_colors()
+            win = self._create_dialog(title, "120x260")
+            try:
+                win.wm_attributes("-toolwindow", True)
+            except Exception:
+                pass
 
-            win = tk.Toplevel(self._ui_root)
-            win.title("Local Gain")
-            win.attributes("-topmost", True)
-            win.wm_attributes("-toolwindow", True)
-            win.resizable(False, False)
-
-            slider_len = 200
-            win_w, win_h = 80, slider_len + 60
-
-            mx, my = win.winfo_pointerxy()
-            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-            x = max(0, min(mx - win_w // 2, sw - win_w))
-            y = max(0, min(my - win_h - 8, sh - win_h))
-            win.geometry(f"{win_w}x{win_h}+{x}+{y}")
-
-            win.configure(bg=c["bg"])
-
-            db_var = tk.StringVar(value=f"{self._gain_db:+} dB")
-            label = tk.Label(win, textvariable=db_var, fg=c["fg"], bg=c["bg"],
-                             font=("Segoe UI", 9))
-            label.pack(pady=(6, 0))
+            c = getattr(win, "_theme", self._theme_colors())
+            value_var = tk.StringVar(value=format_fn(int(initial)))
+            tk.Label(
+                win,
+                textvariable=value_var,
+                fg=c["fg"],
+                bg=c["bg"],
+                font=("Segoe UI", 9),
+            ).pack(pady=(6, 0))
 
             slider = tk.Scale(
-                win, from_=40, to=-20, orient=tk.VERTICAL,
-                length=slider_len, width=14, sliderlength=18,
-                resolution=1, showvalue=False,
-                label="Local Gain",
-                bg=c["bg"], fg=c["fg"], troughcolor=c["trough"],
-                highlightthickness=2, highlightcolor=c["focus"], bd=0,
+                win,
+                from_=from_,
+                to=to,
+                orient=tk.VERTICAL,
+                length=200,
+                width=14,
+                sliderlength=18,
+                resolution=1,
+                showvalue=False,
+                label=title,
+                bg=c["bg"],
+                fg=c["fg"],
+                troughcolor=c["trough"],
+                highlightthickness=2,
+                highlightcolor=c["focus"],
+                bd=0,
                 activebackground=c["thumb"],
             )
-            slider.set(int(self._gain_db))
+            slider.set(int(initial))
             slider.pack(padx=4)
+            win._focus_target = slider
 
-            _debounce_id = [None]
+            debounce_id = [None]
 
             def _on_change(val):
-                db = int(float(val))
-                self._gain_db = db
-                db_var.set(f"{db:+} dB")
-                if _debounce_id[0]:
-                    win.after_cancel(_debounce_id[0])
-                _debounce_id[0] = win.after(150, lambda: _apply(db))
-
-            def _apply(db):
-                self._cfg.gain_db = db
-                self._cfg_store.save(self._cfg)
-                self._update_menu()
+                value = int(float(val))
+                value_var.set(format_fn(value))
+                if debounce_id[0]:
+                    win.after_cancel(debounce_id[0])
+                debounce_id[0] = win.after(150, lambda: apply_fn(value))
 
             slider.configure(command=_on_change)
 
-            def _dismiss(event=None):
-                try:
-                    win.grab_release()
-                    win.destroy()
-                except Exception:
-                    pass
-
-            win.bind("<Escape>", _dismiss)
-            win.bind("<Return>", _dismiss)
-            win.protocol("WM_DELETE_WINDOW", _dismiss)
-
-            def _after_grab():
-                win.grab_set()
-                slider.focus_set()
-
-            win.after(100, _after_grab)
-
         self._run_on_ui(_show)
+
+    def _open_gain_popup(self, icon=None, item=None):
+        self._open_slider_popup(
+            "Local Gain",
+            from_=40,
+            to=-20,
+            initial=int(self._cfg.gain_db),
+            format_fn=lambda value: f"{value:+} dB",
+            apply_fn=self._apply_gain_db,
+        )
+
+    def _apply_gain_db(self, value: int) -> None:
+        self._cfg.gain_db = int(value)
+        self._cfg_store.save(self._cfg)
+        self._update_menu()
 
     def _open_receiver_volume_popup(self, icon=None, item=None):
-        def _show():
-            current = float(self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0)
-            c = self._theme_colors()
+        current = int(self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0)
+        self._open_slider_popup(
+            "Receiver Volume",
+            from_=100,
+            to=0,
+            initial=current,
+            format_fn=lambda value: f"{value}%",
+            apply_fn=self._apply_receiver_volume,
+        )
 
-            win = tk.Toplevel(self._ui_root)
-            win.title("Receiver Volume")
-            win.attributes("-topmost", True)
-            win.wm_attributes("-toolwindow", True)
-            win.resizable(False, False)
-
-            # Slider dimensions
-            slider_len = 200
-            win_w, win_h = 80, slider_len + 60
-
-            # Position above the mouse pointer (near tray icon)
-            mx, my = win.winfo_pointerxy()
-            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-            x = max(0, min(mx - win_w // 2, sw - win_w))
-            y = max(0, min(my - win_h - 8, sh - win_h))
-            win.geometry(f"{win_w}x{win_h}+{x}+{y}")
-
-            win.configure(bg=c["bg"])
-
-            pct_var = tk.StringVar(value=f"{int(current)}%")
-            label = tk.Label(win, textvariable=pct_var, fg=c["fg"], bg=c["bg"],
-                             font=("Segoe UI", 9))
-            label.pack(pady=(6, 0))
-
-            slider = tk.Scale(
-                win, from_=100, to=0, orient=tk.VERTICAL,
-                length=slider_len, width=14, sliderlength=18,
-                resolution=1, showvalue=False,
-                label="Receiver Volume",
-                bg=c["bg"], fg=c["fg"], troughcolor=c["trough"],
-                highlightthickness=2, highlightcolor=c["focus"], bd=0,
-                activebackground=c["thumb"],
-            )
-            slider.set(int(current))
-            slider.pack(padx=4)
-
-            _debounce_id = [None]
-
-            def _on_change(val):
-                v = int(float(val))
-                pct_var.set(f"{v}%")
-                # Debounce: apply after 150ms of no change
-                if _debounce_id[0]:
-                    win.after_cancel(_debounce_id[0])
-                _debounce_id[0] = win.after(150, lambda: _apply(v))
-
-            def _apply(v):
-                self._cfg.receiver_volume = float(v)
-                self._cfg_store.save(self._cfg)
-                if self._atv:
-                    try:
-                        self._schedule(self._atv.audio.set_volume(float(v)))
-                    except Exception:
-                        pass
-                self._update_menu()
-
-            slider.configure(command=_on_change)
-
-            def _dismiss(event=None):
-                try:
-                    win.grab_release()
-                    win.destroy()
-                except Exception:
-                    pass
-
-            win.bind("<Escape>", _dismiss)
-            win.bind("<Return>", _dismiss)
-            win.protocol("WM_DELETE_WINDOW", _dismiss)
-
-            def _after_grab():
-                win.grab_set()
-                slider.focus_set()
-
-            win.after(100, _after_grab)
-
-        self._run_on_ui(_show)
+    def _apply_receiver_volume(self, value: int) -> None:
+        self._cfg.receiver_volume = float(value)
+        self._cfg_store.save(self._cfg)
+        if self._atv:
+            try:
+                self._schedule(self._atv.audio.set_volume(float(value)))
+            except Exception:
+                pass
+        self._refresh_tray_visuals()
+        self._update_menu()
 
     # ───────────────────────── Settings toggles ────────────────────────────
 
@@ -2346,15 +2498,11 @@ class AirPlayTray:
 
             txt.bind("<Control-Return>", lambda e: on_save())
             tk.Label(win, text="Ctrl+Enter to save", font=("", 8), takefocus=0).pack(pady=(4, 0))
-            btn_frame = tk.Frame(win, takefocus=0)
-            btn_frame.pack(pady=(4, 0))
-            tk.Button(btn_frame, text="Save", command=on_save, width=16).pack(side=tk.LEFT, padx=4)
-            tk.Button(
-                btn_frame,
-                text="Cancel",
-                command=lambda: self._close_dialog(win),
-                width=16,
-            ).pack(side=tk.LEFT, padx=4)
+            self._create_dialog_buttons(
+                win,
+                [("Save", on_save), ("Cancel", lambda: self._close_dialog(win))],
+                pady=(4, 0),
+            )
 
         self._run_on_ui(_show)
 
@@ -2375,7 +2523,7 @@ class AirPlayTray:
             f"Target Device: {target}\n"
             f"Audio Source: {source}\n"
             f"Receiver Volume: {receiver_volume:.0f}%\n"
-            f"Local Gain: {self._gain_db:+} dB"
+            f"Local Gain: {self._cfg.gain_db:+} dB"
         )
         if self._last_error:
             msg += f"\nLast Error: {self._last_error}"
@@ -2426,18 +2574,19 @@ class AirPlayTray:
             def _save():
                 new_hk = entry.get().strip()
                 self._cfg.hotkey_toggle = new_hk
-                self._config_store.save(self._cfg)
+                self._cfg_store.save(self._cfg)
                 self._register_hotkey()
                 self._update_menu()
                 self._close_dialog(win)
 
-            btn_frame = tk.Frame(win)
-            btn_frame.pack(pady=8)
-            tk.Button(btn_frame, text="Save", width=10, command=_save).pack(side="left", padx=4)
-            tk.Button(btn_frame, text="Cancel", width=10, command=lambda: self._close_dialog(win)).pack(side="left", padx=4)
+            self._create_dialog_buttons(
+                win,
+                [("Save", _save), ("Cancel", lambda: self._close_dialog(win))],
+                pady=(8, 0),
+                width=10,
+            )
 
-        if self._ui_root:
-            self._ui_root.after(0, _show)
+        self._run_on_ui(_show)
 
     def _toggle_streaming(self, icon=None, item=None):
         if self._streaming:
@@ -2503,16 +2652,12 @@ class AirPlayTray:
 
     def _set_status(self, status: str, icon_img):
         self._status = status
+        self._status_icon = icon_img
         if icon_img is ICON_ERROR and status != "Reconnecting...":
             self._last_error = status
         elif icon_img is not ICON_ERROR:
             self._last_error = None
-        if self._icon:
-            try:
-                self._icon.icon = icon_img
-                self._icon.title = f"AirPlay: {status}"
-            except Exception:
-                pass
+        self._refresh_tray_visuals()
         try:
             if icon_img is ICON_ERROR:
                 winsound.MessageBeep(winsound.MB_ICONHAND)
@@ -2534,6 +2679,7 @@ class AirPlayTray:
         device_items = [
             pystray.MenuItem("Rescan Devices", lambda icon=None, item=None: self._scan_devices()),
             pystray.MenuItem("Add by IP...", self._manual_add_device_dialog),
+            pystray.MenuItem("Manage Receivers...", self._open_device_picker_dialog),
             pystray.Menu.SEPARATOR,
         ]
         devices = self._get_devices_sorted()
@@ -2541,7 +2687,7 @@ class AirPlayTray:
             device_items.append(pystray.MenuItem("(no devices found)", None, enabled=False))
         else:
             for dev in devices[:25]:
-                label = f"{dev.name} ({dev.address})"
+                label = self._device_menu_label(dev)
                 device_items.append(
                     pystray.MenuItem(
                         label,
@@ -2579,16 +2725,16 @@ class AirPlayTray:
             pystray.MenuItem(
                 "Limiter (prevent clipping)",
                 self._toggle_limiter,
-                checked=lambda item: self._enable_limiter,
+                checked=lambda item: self._cfg.enable_limiter,
             ),
         )
 
         rv = self._cfg.receiver_volume if self._cfg.receiver_volume is not None else 50.0
 
         bind_submenu = pystray.Menu(
-            pystray.MenuItem("Auto (recommended)", self._set_bind_mode("auto"), checked=lambda item: self._cfg.bind_mode == "auto", radio=True),
-            pystray.MenuItem("Manual...", self._set_bind_mode("manual"), checked=lambda item: self._cfg.bind_mode == "manual", radio=True),
-            pystray.MenuItem("None (OS default)", self._set_bind_mode("none"), checked=lambda item: self._cfg.bind_mode == "none", radio=True),
+            pystray.MenuItem("Auto (recommended)", self._set_bind_mode(BIND_MODE_AUTO), checked=lambda item: self._cfg.bind_mode == BIND_MODE_AUTO, radio=True),
+            pystray.MenuItem("Manual...", self._set_bind_mode(BIND_MODE_MANUAL), checked=lambda item: self._cfg.bind_mode == BIND_MODE_MANUAL, radio=True),
+            pystray.MenuItem("None (OS default)", self._set_bind_mode(BIND_MODE_NONE), checked=lambda item: self._cfg.bind_mode == BIND_MODE_NONE, radio=True),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Current: {self._binder.local_ip or 'n/a'}", None, enabled=False),
         )
@@ -2607,16 +2753,19 @@ class AirPlayTray:
         toggle_label = "Stop Streaming" if self._streaming else "Start Streaming"
         toggle_action = self._stop_streaming if self._streaming else self._start_streaming
         target_name = self._cfg.selected_device_name or "(none)"
+        if target_name != "(none)":
+            target_name = self._label_with_receiver_volume(target_name)
         source_label = self._target_name or "All Audio"
+        status_label = self._status_with_receiver(self._status)
 
         return pystray.Menu(
-            pystray.MenuItem(f"Status: {self._status}", None, enabled=False),
+            pystray.MenuItem(f"Status: {status_label}", None, enabled=False),
             pystray.MenuItem("View Status...", self._show_status_dialog),
             pystray.MenuItem(toggle_label, toggle_action),
             pystray.MenuItem(f"Target Device: {target_name}", device_submenu),
             pystray.MenuItem(f"Audio Source: {source_label}", source_submenu),
-            pystray.MenuItem(f"Receiver Volume: {rv:.0f}%", self._open_receiver_volume_popup),
-            pystray.MenuItem(f"Local Gain: {self._gain_db:+} dB", gain_submenu),
+            pystray.MenuItem(f"Receiver Volume: {rv:.0f}%", self._open_receiver_volume_popup, default=True),
+            pystray.MenuItem(f"Local Gain: {self._cfg.gain_db:+} dB", gain_submenu),
             pystray.MenuItem("Settings", settings_submenu),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Logs", self._open_logs),
@@ -2659,7 +2808,7 @@ class AirPlayTray:
 
         self._icon = pystray.Icon(
             "trayplay",
-            icon=ICON_IDLE,
+            icon=self._current_tray_icon(),
             title="AirPlay: Idle",
             menu=self._build_menu(),
         )
