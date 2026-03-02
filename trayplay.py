@@ -2280,6 +2280,53 @@ class AirPlayTray:
 
     # ───────────────────────── Tray callbacks ──────────────────────────────
 
+    def _register_hotkey(self):
+        try:
+            import keyboard
+        except ImportError:
+            log.warning("keyboard module not available – hotkey disabled")
+            return
+        self._unregister_hotkey()
+        if self._cfg.hotkey_toggle:
+            try:
+                keyboard.add_hotkey(self._cfg.hotkey_toggle, self._toggle_streaming)
+                log.info(f"Global hotkey registered: {self._cfg.hotkey_toggle}")
+            except Exception:
+                log.exception("Failed to register hotkey")
+
+    def _unregister_hotkey(self):
+        try:
+            import keyboard
+            keyboard.unhook_all_hotkeys()
+        except Exception:
+            pass
+
+    def _change_hotkey_dialog(self, icon=None, item=None):
+        def _show():
+            win = self._create_dialog("Change Hotkey", "350x120")
+            tk.Label(win, text="Press new hotkey combo, then click Save.\nClear the field to disable.").pack(pady=(8, 4))
+            entry = tk.Entry(win, justify="center", font=("Segoe UI", 11))
+            entry.insert(0, self._cfg.hotkey_toggle or "")
+            entry.pack(padx=16, fill="x")
+            entry.focus_set()
+            win._focus_target = entry
+
+            def _save():
+                new_hk = entry.get().strip()
+                self._cfg.hotkey_toggle = new_hk
+                self._config_store.save(self._cfg)
+                self._register_hotkey()
+                self._update_menu()
+                self._close_dialog(win)
+
+            btn_frame = tk.Frame(win)
+            btn_frame.pack(pady=8)
+            tk.Button(btn_frame, text="Save", width=10, command=_save).pack(side="left", padx=4)
+            tk.Button(btn_frame, text="Cancel", width=10, command=lambda: self._close_dialog(win)).pack(side="left", padx=4)
+
+        if self._ui_root:
+            self._ui_root.after(0, _show)
+
     def _toggle_streaming(self, icon=None, item=None):
         if self._streaming:
             self._stop_streaming()
