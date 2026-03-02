@@ -2136,49 +2136,77 @@ class AirPlayTray:
         log.info(f"Limiter {'enabled' if self._enable_limiter else 'disabled'}")
         self._update_menu()
 
-    def _open_gain_slider(self, icon=None, item=None):
+    def _open_gain_popup(self, icon=None, item=None):
         def _show():
-            win = self._create_dialog("Local Gain (preamp)", "400x250")
+            c = self._theme_colors()
 
-            var = tk.IntVar(value=int(self._gain_db))
+            win = tk.Toplevel(self._ui_root)
+            win.title("Local Gain")
+            win.attributes("-topmost", True)
+            win.wm_attributes("-toolwindow", True)
+            win.resizable(False, False)
 
-            def on_slide(val):
+            slider_len = 200
+            win_w, win_h = 80, slider_len + 60
+
+            mx, my = win.winfo_pointerxy()
+            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+            x = max(0, min(mx - win_w // 2, sw - win_w))
+            y = max(0, min(my - win_h - 8, sh - win_h))
+            win.geometry(f"{win_w}x{win_h}+{x}+{y}")
+
+            win.configure(bg=c["bg"])
+
+            db_var = tk.StringVar(value=f"{self._gain_db:+} dB")
+            label = tk.Label(win, textvariable=db_var, fg=c["fg"], bg=c["bg"],
+                             font=("Segoe UI", 9))
+            label.pack(pady=(6, 0))
+
+            slider = tk.Scale(
+                win, from_=40, to=-20, orient=tk.VERTICAL,
+                length=slider_len, width=14, sliderlength=18,
+                resolution=1, showvalue=False,
+                label="Local Gain",
+                bg=c["bg"], fg=c["fg"], troughcolor=c["trough"],
+                highlightthickness=2, highlightcolor=c["focus"], bd=0,
+                activebackground=c["thumb"],
+            )
+            slider.set(int(self._gain_db))
+            slider.pack(padx=4)
+
+            _debounce_id = [None]
+
+            def _on_change(val):
                 db = int(float(val))
                 self._gain_db = db
+                db_var.set(f"{db:+} dB")
+                if _debounce_id[0]:
+                    win.after_cancel(_debounce_id[0])
+                _debounce_id[0] = win.after(150, lambda: _apply(db))
 
-            lf = tk.LabelFrame(win, text="Local Gain (dB)")
-            lf.pack(padx=12, pady=(10, 0), fill=tk.X)
-            slider = tk.Scale(
-                lf,
-                from_=-20,
-                to=40,
-                orient=tk.HORIZONTAL,
-                variable=var,
-                command=on_slide,
-                showvalue=True,
-                length=300,
-                resolution=1,
-                label="Use Left and Right arrow keys to adjust",
-            )
-            slider.pack(padx=4, pady=4)
-            win._focus_target = slider
-
-            def on_apply():
-                self._cfg.gain_db = int(self._gain_db)
+            def _apply(db):
+                self._cfg.gain_db = db
                 self._cfg_store.save(self._cfg)
                 self._update_menu()
-                self._close_dialog(win)
 
-            slider.bind("<Return>", lambda e: on_apply())
-            btn_frame = tk.Frame(win, takefocus=0)
-            btn_frame.pack(pady=(8, 0))
-            tk.Button(btn_frame, text="Apply", command=on_apply, width=16).pack(side=tk.LEFT, padx=4)
-            tk.Button(
-                btn_frame,
-                text="Cancel",
-                command=lambda: self._close_dialog(win),
-                width=16,
-            ).pack(side=tk.LEFT, padx=4)
+            slider.configure(command=_on_change)
+
+            def _dismiss(event=None):
+                try:
+                    win.grab_release()
+                    win.destroy()
+                except Exception:
+                    pass
+
+            win.bind("<Escape>", _dismiss)
+            win.bind("<Return>", _dismiss)
+            win.protocol("WM_DELETE_WINDOW", _dismiss)
+
+            def _after_grab():
+                win.grab_set()
+                slider.focus_set()
+
+            win.after(100, _after_grab)
 
         self._run_on_ui(_show)
 
