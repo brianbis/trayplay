@@ -2,7 +2,7 @@
 
 TrayPlay is a Windows system tray app that streams Windows audio to AirPlay/RAOP receivers.
 
-Current version: `0.1.0`
+Current version: `0.2.0`
 
 It can stream:
 
@@ -90,7 +90,7 @@ This repository includes a Windows GitHub Actions workflow that:
 - builds TrayPlay on Windows
 - packages the `dist\TrayPlay` folder as a zip
 - uploads the zip as a workflow artifact
-- attaches the zip to a GitHub Release when you push a version tag such as `v0.1.0`
+- attaches the zip to a GitHub Release when you push a version tag such as `v0.2.0`
 
 ## Usage
 
