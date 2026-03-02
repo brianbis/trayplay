@@ -265,6 +265,20 @@ def set_autostart_enabled(enable: bool) -> None:
                 pass
 
 
+def _is_dark_theme() -> bool:
+    """Return True if Windows app theme is dark."""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return val == 0
+    except Exception:
+        return True  # default to dark
+
+
 def is_autostart_enabled() -> bool:
     try:
         import winreg  # type: ignore
