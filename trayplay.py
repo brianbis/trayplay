@@ -2385,6 +2385,7 @@ class AirPlayTray:
             win._focus_target = slider
 
             debounce_id = [None]
+            closed = [False]
 
             def _on_change(val):
                 value = int(float(val))
@@ -2393,7 +2394,55 @@ class AirPlayTray:
                     win.after_cancel(debounce_id[0])
                 debounce_id[0] = win.after(150, lambda: apply_fn(value))
 
+            def _dismiss(event=None):
+                if closed[0]:
+                    return
+                closed[0] = True
+                if debounce_id[0]:
+                    try:
+                        win.after_cancel(debounce_id[0])
+                    except Exception:
+                        pass
+                    debounce_id[0] = None
+                    try:
+                        apply_fn(int(float(slider.get())))
+                    except Exception:
+                        pass
+                self._close_dialog(win)
+
+            def _maybe_dismiss_on_focus_loss(event=None):
+                if closed[0]:
+                    return
+
+                def _check():
+                    if closed[0]:
+                        return
+                    focus_widget = None
+                    try:
+                        focus_widget = win.focus_displayof()
+                    except Exception:
+                        pass
+                    if focus_widget is None:
+                        _dismiss()
+                        return
+                    try:
+                        widget_str = str(focus_widget)
+                    except Exception:
+                        widget_str = ""
+                    if widget_str and widget_str.startswith(str(win)):
+                        return
+                    _dismiss()
+
+                try:
+                    win.after(75, _check)
+                except Exception:
+                    _dismiss()
+
             slider.configure(command=_on_change)
+            win.bind("<FocusOut>", _maybe_dismiss_on_focus_loss)
+            slider.bind("<FocusOut>", _maybe_dismiss_on_focus_loss)
+            win.bind("<Unmap>", _dismiss)
+            win.protocol("WM_DELETE_WINDOW", _dismiss)
 
         self._run_on_ui(_show)
 
