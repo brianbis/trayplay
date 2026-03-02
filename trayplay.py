@@ -2572,6 +2572,8 @@ class AirPlayTray:
         )
         log.info("AirPlay tray app started")
 
+        self._register_hotkey()
+
         if self._cfg.auto_connect_on_launch:
             self._start_streaming()
 
