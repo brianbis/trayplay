@@ -2125,8 +2125,9 @@ class AirPlayTray:
 
             win = tk.Toplevel(self._ui_root)
             win.title("Receiver Volume")
-            win.overrideredirect(True)
             win.attributes("-topmost", True)
+            win.wm_attributes("-toolwindow", True)
+            win.resizable(False, False)
 
             # Slider dimensions
             slider_len = 200
