@@ -140,6 +140,7 @@ class AppConfig:
     autostart_with_windows: bool = False
     auto_capture_preferred_app: bool = False
     preferred_app_names: List[str] = field(default_factory=lambda: ["spotify.exe"])
+    hotkey_toggle: str = "ctrl+shift+p"
 
 
 class ConfigStore:
